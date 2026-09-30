@@ -34,6 +34,11 @@ vi.mock('node:fs/promises', () => ({
     }
     const scoped = [...fsState.scoped].find(([name]) => file.endsWith(`${name}.json`))
     if (scoped) {
+      if (scoped[1] === 'EACCES') {
+        const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException
+        error.code = 'EACCES'
+        throw error
+      }
       return scoped[1]
     }
     if (fsState.readError) {
@@ -88,6 +93,7 @@ function scopedConfig(key: string): string {
   return [
     '[providers."managed:kimi-code"]',
     'type = "kimi"',
+    'base_url = "https://api.kimi.ai/coding/v1"',
     '',
     '[providers."managed:kimi-code".oauth]',
     'storage = "file"',
@@ -249,8 +255,33 @@ describe('fetchKimiRateLimits', () => {
         hostConfigPath('/home/test/.kimi-code'),
         join('/home/test/.kimi-code', 'credentials', `${SCOPED}.json`)
       ])
-      const [, init] = netFetchMock.mock.calls[0]
+      const [url, init] = netFetchMock.mock.calls[0]
       expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-scoped')
+      // The scoped token only goes to the environment it was issued for.
+      expect(url).toBe('https://api.kimi.ai/coding/v1/usages')
+    })
+
+    it('lets KIMI_CODE_BASE_URL override the slot base_url, like the CLI', async () => {
+      vi.stubEnv('KIMI_CODE_BASE_URL', 'https://staging.example.com/coding/v1/')
+      fsState.config = scopedConfig(`oauth/${SCOPED}`)
+      fsState.scoped.set(SCOPED, freshCredentials())
+      netFetchMock.mockResolvedValueOnce(jsonResponse(USAGE_RESPONSE))
+
+      await fetchKimiRateLimits()
+
+      expect(netFetchMock.mock.calls[0][0]).toBe('https://staging.example.com/coding/v1/usages')
+    })
+
+    it('falls back to kimi-code.json when the scoped file is unreadable', async () => {
+      fsState.config = scopedConfig(`oauth/${SCOPED}`)
+      fsState.scoped.set(SCOPED, 'EACCES')
+      fsState.credentials = freshCredentials()
+      netFetchMock.mockResolvedValueOnce(jsonResponse(USAGE_RESPONSE))
+
+      const result = await fetchKimiRateLimits()
+
+      expect(result.status).toBe('ok')
+      expect(netFetchMock.mock.calls[0][0]).toBe('https://api.kimi.com/coding/v1/usages')
     })
 
     it('falls back to kimi-code.json when the configured slot file is missing', async () => {
@@ -265,6 +296,8 @@ describe('fetchKimiRateLimits', () => {
         join('/home/test/.kimi-code', 'credentials', `${SCOPED}.json`),
         hostCredentialsPath('/home/test/.kimi-code')
       ])
+      // The default slot's token keeps going to the default host.
+      expect(netFetchMock.mock.calls[0][0]).toBe('https://api.kimi.com/coding/v1/usages')
     })
 
     it('reports an expired scoped token without calling the API', async () => {

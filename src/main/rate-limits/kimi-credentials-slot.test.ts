@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  kimiCredentialTokenNames,
   kimiTokenNameFromOAuthKey,
-  parseKimiManagedOAuthKey
+  parseKimiManagedBaseUrl,
+  parseKimiManagedOAuthKey,
+  resolveKimiCredentialSlots
 } from './kimi-credentials-slot'
 
 // Shape written by Kimi Code 2.x after logging in against auth.kimi.ai.
@@ -62,18 +63,37 @@ describe('kimiTokenNameFromOAuthKey', () => {
   )
 })
 
-describe('kimiCredentialTokenNames', () => {
-  it('prefers the configured scoped slot and falls back to the default slot', () => {
-    expect(kimiCredentialTokenNames(SCOPED_CONFIG)).toEqual([
-      'kimi-code-env-0e4f99c69cc27850',
-      'kimi-code'
+describe('parseKimiManagedBaseUrl', () => {
+  it('reads base_url from the managed provider table, not other tables', () => {
+    expect(parseKimiManagedBaseUrl(SCOPED_CONFIG)).toBe('https://api.kimi.ai/coding/v1')
+  })
+
+  it('strips a trailing slash', () => {
+    const config = '[providers."managed:kimi-code"]\nbase_url = "https://api.kimi.ai/coding/v1/"\n'
+    expect(parseKimiManagedBaseUrl(config)).toBe('https://api.kimi.ai/coding/v1')
+  })
+
+  it.each(['http://api.kimi.ai/coding/v1', 'https://user:pw@api.kimi.ai/coding/v1', 'not a url'])(
+    'rejects %s so the token is never sent there',
+    (baseUrl) => {
+      const config = `[providers."managed:kimi-code"]\nbase_url = "${baseUrl}"\n`
+      expect(parseKimiManagedBaseUrl(config)).toBeNull()
+    }
+  )
+})
+
+describe('resolveKimiCredentialSlots', () => {
+  it('pairs the configured scoped slot with its base_url and falls back to the default slot', () => {
+    expect(resolveKimiCredentialSlots(SCOPED_CONFIG)).toEqual([
+      { tokenName: 'kimi-code-env-0e4f99c69cc27850', baseUrl: 'https://api.kimi.ai/coding/v1' },
+      { tokenName: 'kimi-code', baseUrl: null }
     ])
   })
 
   it('uses only the default slot without a config or when it is the default key', () => {
-    expect(kimiCredentialTokenNames(null)).toEqual(['kimi-code'])
+    expect(resolveKimiCredentialSlots(null)).toEqual([{ tokenName: 'kimi-code', baseUrl: null }])
     expect(
-      kimiCredentialTokenNames('[providers."managed:kimi-code".oauth]\nkey = "oauth/kimi-code"\n')
-    ).toEqual(['kimi-code'])
+      resolveKimiCredentialSlots('[providers."managed:kimi-code".oauth]\nkey = "oauth/kimi-code"\n')
+    ).toEqual([{ tokenName: 'kimi-code', baseUrl: null }])
   })
 })

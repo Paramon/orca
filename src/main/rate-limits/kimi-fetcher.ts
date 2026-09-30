@@ -9,9 +9,13 @@ import { readKimiCredentials, type KimiCredentials } from './kimi-credentials-re
 
 // Why: Kimi Code's managed coding plan exposes subscription usage at
 // `${base}/usages` (see packages/oauth/src/managed-usage.ts in the CLI bundle).
-// The base URL is overridable via the same env var the CLI honours so Orca
-// stays aligned with a user's self-hosted/staging config.
-const KIMI_BASE_URL = process.env.KIMI_CODE_BASE_URL ?? 'https://api.kimi.com/coding/v1'
+// Base URL precedence matches the CLI: KIMI_CODE_BASE_URL, then the base_url of
+// the credential slot's environment (config.toml), then the shared default.
+const DEFAULT_KIMI_BASE_URL = 'https://api.kimi.com/coding/v1'
+
+function resolveKimiBaseUrl(slotBaseUrl: string | null): string {
+  return (process.env.KIMI_CODE_BASE_URL ?? slotBaseUrl ?? DEFAULT_KIMI_BASE_URL).replace(/\/$/, '')
+}
 const API_TIMEOUT_MS = 10_000
 
 const SESSION_WINDOW_MINUTES = 300 // 5h
@@ -237,7 +241,7 @@ export async function fetchKimiRateLimits(options?: {
   }
 
   try {
-    const res = await net.fetch(`${KIMI_BASE_URL.replace(/\/$/, '')}/usages`, {
+    const res = await net.fetch(`${resolveKimiBaseUrl(readResult.baseUrl)}/usages`, {
       // Why: identical to the CLI's fetchManagedUsage — bearer token + Accept.
       // No extra User-Agent: the usages endpoint authenticates by token only.
       headers: { Authorization: `Bearer ${creds.access_token}`, Accept: 'application/json' },

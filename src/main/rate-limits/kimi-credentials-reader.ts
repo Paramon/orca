@@ -7,7 +7,7 @@ import {
   DEFAULT_KIMI_TOKEN_NAME,
   getKimiConfigPath,
   getKimiCredentialsPath,
-  kimiCredentialTokenNames
+  resolveKimiCredentialSlots
 } from './kimi-credentials-slot'
 
 const CREDENTIALS_READ_TIMEOUT_MS = 5_000
@@ -20,7 +20,7 @@ export type KimiCredentials = {
 export type CredentialsReadResult =
   | { status: 'missing' }
   | { status: 'error'; error: string }
-  | { status: 'ok'; credentials: KimiCredentials }
+  | { status: 'ok'; credentials: KimiCredentials; baseUrl: string | null }
 
 type TextReadResult =
   | { status: 'missing' }
@@ -88,11 +88,11 @@ async function readText(path: string, signal: AbortSignal): Promise<TextReadResu
   }
 }
 
-function parseCredentialsText(raw: string): CredentialsReadResult {
+function parseCredentialsText(raw: string, baseUrl: string | null): CredentialsReadResult {
   try {
     const credentials = parseCredentials(JSON.parse(raw))
     return credentials
-      ? { status: 'ok', credentials }
+      ? { status: 'ok', credentials, baseUrl }
       : { status: 'error', error: 'Kimi credentials file is invalid' }
   } catch (err) {
     return { status: 'error', error: readErrorMessage(err) }
@@ -108,13 +108,21 @@ export async function readKimiCredentials(kimiHome: string): Promise<Credentials
     return config
   }
   // An unreadable config only loses the scoped slot; the default slot still works.
-  const tokenNames = kimiCredentialTokenNames(config.status === 'ok' ? config.raw : null)
-  for (const tokenName of tokenNames) {
-    const credentials = await readText(getKimiCredentialsPath(kimiHome, tokenName), signal)
-    if (credentials.status === 'missing' && tokenName !== DEFAULT_KIMI_TOKEN_NAME) {
+  const slots = resolveKimiCredentialSlots(config.status === 'ok' ? config.raw : null)
+  for (const slot of slots) {
+    const credentials = await readText(getKimiCredentialsPath(kimiHome, slot.tokenName), signal)
+    // Why: a missing or unreadable scoped file shouldn't hide a valid default
+    // slot. Timeouts still stop here so a stalled UNC home keeps its error.
+    if (
+      credentials.status !== 'ok' &&
+      slot.tokenName !== DEFAULT_KIMI_TOKEN_NAME &&
+      !signal.aborted
+    ) {
       continue
     }
-    return credentials.status === 'ok' ? parseCredentialsText(credentials.raw) : credentials
+    return credentials.status === 'ok'
+      ? parseCredentialsText(credentials.raw, slot.baseUrl)
+      : credentials
   }
   return { status: 'missing' }
 }

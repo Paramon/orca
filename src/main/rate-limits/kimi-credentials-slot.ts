@@ -10,7 +10,14 @@ import { parseWslUncPath } from '../../shared/wsl-paths'
 // only the default file shows a permanently expired session.
 export const DEFAULT_KIMI_TOKEN_NAME = 'kimi-code'
 const OAUTH_KEY_PREFIX = 'oauth/'
-const MANAGED_PROVIDER_OAUTH_TABLE = 'providers.managed:kimi-code.oauth'
+const MANAGED_PROVIDER_TABLE = 'providers.managed:kimi-code'
+const MANAGED_PROVIDER_OAUTH_TABLE = `${MANAGED_PROVIDER_TABLE}.oauth`
+
+export type KimiCredentialSlot = {
+  tokenName: string
+  /** API base the token belongs to; null means the CLI's default base URL. */
+  baseUrl: string | null
+}
 
 function joinKimiPath(kimiHome: string, ...segments: string[]): string {
   // WSL homes arrive as `\\wsl.localhost\<distro>\...`, which only win32 join keeps intact.
@@ -57,25 +64,20 @@ function parseTomlString(raw: string): string | null {
   return match[1] !== undefined ? match[1].replace(/\\(["\\])/g, '$1') : (match[2] ?? null)
 }
 
-/**
- * Read the managed Kimi Code OAuth key from config.toml without a TOML
- * dependency: only the `key` string inside the managed provider's oauth table
- * is needed, and both are single-line by construction (the CLI writes them).
- */
-export function parseKimiManagedOAuthKey(configToml: string): string | null {
-  let inManagedOAuthTable = false
+function readTomlTableString(configToml: string, table: string, key: string): string | null {
+  let inTable = false
+  const pairPattern = new RegExp(`^${key}\\s*=\\s*(.+)$`)
   for (const rawLine of configToml.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (line.startsWith('[')) {
       const header = /^\[([^[\]]+)\]\s*(?:#.*)?$/.exec(line)
-      inManagedOAuthTable =
-        header !== null && normalizeTableHeader(header[1]) === MANAGED_PROVIDER_OAUTH_TABLE
+      inTable = header !== null && normalizeTableHeader(header[1]) === table
       continue
     }
-    if (!inManagedOAuthTable) {
+    if (!inTable) {
       continue
     }
-    const pair = /^key\s*=\s*(.+)$/.exec(line)
+    const pair = pairPattern.exec(line)
     if (pair) {
       return parseTomlString(pair[1])
     }
@@ -83,11 +85,51 @@ export function parseKimiManagedOAuthKey(configToml: string): string | null {
   return null
 }
 
-/** Token names to try, configured slot first, always falling back to the default slot. */
-export function kimiCredentialTokenNames(configToml: string | null): string[] {
-  const key = configToml ? parseKimiManagedOAuthKey(configToml) : null
+/**
+ * Read the managed Kimi Code OAuth key from config.toml without a TOML
+ * dependency: only single-line strings the CLI itself writes are needed.
+ */
+export function parseKimiManagedOAuthKey(configToml: string): string | null {
+  return readTomlTableString(configToml, MANAGED_PROVIDER_OAUTH_TABLE, 'key')
+}
+
+/**
+ * The managed provider's `base_url`, i.e. the API host the scoped token was
+ * issued for. Only absolute https URLs without embedded credentials are
+ * accepted so a malformed config can't redirect the bearer token elsewhere.
+ */
+export function parseKimiManagedBaseUrl(configToml: string): string | null {
+  const raw = readTomlTableString(configToml, MANAGED_PROVIDER_TABLE, 'base_url')
+  if (!raw) {
+    return null
+  }
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') {
+    return null
+  }
+  return raw.replace(/\/+$/, '')
+}
+
+/**
+ * Credential slots to try, configured slot first, always falling back to the
+ * default slot. The scoped slot carries its environment's base URL so the token
+ * is only sent to the host it belongs to (the CLI does the same); the default
+ * slot always uses the default base URL.
+ */
+export function resolveKimiCredentialSlots(configToml: string | null): KimiCredentialSlot[] {
+  const defaultSlot: KimiCredentialSlot = { tokenName: DEFAULT_KIMI_TOKEN_NAME, baseUrl: null }
+  if (!configToml) {
+    return [defaultSlot]
+  }
+  const key = parseKimiManagedOAuthKey(configToml)
   const configured = key ? kimiTokenNameFromOAuthKey(key) : null
-  return configured && configured !== DEFAULT_KIMI_TOKEN_NAME
-    ? [configured, DEFAULT_KIMI_TOKEN_NAME]
-    : [DEFAULT_KIMI_TOKEN_NAME]
+  if (!configured || configured === DEFAULT_KIMI_TOKEN_NAME) {
+    return [defaultSlot]
+  }
+  return [{ tokenName: configured, baseUrl: parseKimiManagedBaseUrl(configToml) }, defaultSlot]
 }
