@@ -111,13 +111,10 @@ export async function readKimiCredentials(kimiHome: string): Promise<Credentials
   const slots = resolveKimiCredentialSlots(config.status === 'ok' ? config.raw : null)
   for (const slot of slots) {
     const credentials = await readText(getKimiCredentialsPath(kimiHome, slot.tokenName), signal)
-    // Why: a missing or unreadable scoped file shouldn't hide a valid default
-    // slot. Timeouts still stop here so a stalled UNC home keeps its error.
-    if (
-      credentials.status !== 'ok' &&
-      slot.tokenName !== DEFAULT_KIMI_TOKEN_NAME &&
-      !signal.aborted
-    ) {
+    // Why: fall back only when the scoped file is missing. If it exists but is
+    // unreadable, surface that error: the legacy file may be stale or belong to
+    // another account, so silently using it would show the wrong usage.
+    if (credentials.status === 'missing' && slot.tokenName !== DEFAULT_KIMI_TOKEN_NAME) {
       continue
     }
     return credentials.status === 'ok'

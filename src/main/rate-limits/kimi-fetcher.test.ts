@@ -272,16 +272,20 @@ describe('fetchKimiRateLimits', () => {
       expect(netFetchMock.mock.calls[0][0]).toBe('https://staging.example.com/coding/v1/usages')
     })
 
-    it('falls back to kimi-code.json when the scoped file is unreadable', async () => {
+    it('surfaces an unreadable scoped file instead of using the legacy slot', async () => {
       fsState.config = scopedConfig(`oauth/${SCOPED}`)
       fsState.scoped.set(SCOPED, 'EACCES')
+      // A valid-looking legacy token may be stale or another account's.
       fsState.credentials = freshCredentials()
-      netFetchMock.mockResolvedValueOnce(jsonResponse(USAGE_RESPONSE))
 
       const result = await fetchKimiRateLimits()
 
-      expect(result.status).toBe('ok')
-      expect(netFetchMock.mock.calls[0][0]).toBe('https://api.kimi.com/coding/v1/usages')
+      expect(result.status).toBe('error')
+      expect(result.error).toMatch(/EACCES/)
+      expect(credentialReads()).toEqual([
+        join('/home/test/.kimi-code', 'credentials', `${SCOPED}.json`)
+      ])
+      expect(netFetchMock).not.toHaveBeenCalled()
     })
 
     it('falls back to kimi-code.json when the configured slot file is missing', async () => {
